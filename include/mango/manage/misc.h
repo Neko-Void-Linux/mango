@@ -3,7 +3,7 @@
 
 #include "mango/common/types.h"
 #include <sys/types.h>
-
+#include <stdbool.h>
 pid_t get_parent_process(pid_t p);
 int32_t is_descendant_process(pid_t p, pid_t c);
 void get_layout_abbr(char *abbr, const char *full_name);

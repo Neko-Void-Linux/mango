@@ -30,6 +30,7 @@ void client_draw_groupbar(Client *c, struct ivec2 offsets);
 void global_draw_group_bar(Client *c, int32_t x, int32_t y, int32_t width,
 						   int32_t height);
 void client_draw_shield(Client *c, struct ivec2 clip_box);
+void client_draw_dim(Client *c, struct ivec2 clip_box);
 void client_draw_blur(Client *c, struct ivec2 clip_box);
 void client_draw_split_border(Client *c, bool hit_no_border,
 							  struct ivec2 offsets);
@@ -40,9 +41,12 @@ void client_set_drop_area(Client *c);
 
 /* ---------- central rendering entry point ---------- */
 void client_apply_clip(Client *c, float factor);
+void client_animation_set_progress(Client *c, double p);
+void client_animation_resume(Client *c, double remaining);
 void fadeout_client_animation_next_tick(Client *c);
 void client_animation_next_tick(Client *c);
 void init_fadeout_client(Client *c);
+bool client_animations_enabled(const Client *c);
 
 /* Applies the final window state when animation is disabled: position,
  * clipping/visibility, and geometry state are synchronized. */
@@ -61,6 +65,8 @@ void resize(Client *c, struct wlr_box geo, int32_t interact);
 bool client_draw_fadeout_frame(Client *c);
 void client_set_focused_opacity_animation(Client *c);
 void client_set_unfocused_opacity_animation(Client *c);
+void client_start_focus_animation(Client *c, bool focused);
+bool client_step_focus_animation(Client *c, double linear_progress);
 bool client_apply_focus_opacity(Client *c);
 bool client_draw_frame(Client *c);
 

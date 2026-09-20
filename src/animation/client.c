@@ -8,6 +8,7 @@
 #include "mango/manage/misc.h"
 #include "mango/manage/monitor.h"
 #include "mango/overview/overview.h"
+#include <math.h>
 #include <scenefx/types/wlr_scene.h>
 #include <stdint.h>
 #include <wlr/types/wlr_compositor.h>
@@ -18,6 +19,29 @@
 #ifdef XWAYLAND
 #include <wlr/xwayland.h>
 #endif
+
+static bool client_gesture_driven(const Client *c) {
+	return server.gesture_drive_active && c &&
+		   c->mon == server.gesture_drive_mon;
+}
+
+static int32_t client_open_animation_type(const Client *c) {
+	return c->animation_type_open != ANIM_TYPE_UNSET
+			   ? c->animation_type_open
+			   : config.animation_type_open;
+}
+
+static int32_t client_close_animation_type(const Client *c) {
+	return c->animation_type_close != ANIM_TYPE_UNSET
+			   ? c->animation_type_close
+			   : config.animation_type_close;
+}
+
+bool client_animations_enabled(const Client *c) {
+	if (config.animations)
+		return true;
+	return client_gesture_driven(c);
+}
 
 bool client_is_ignore_output_clip(Client *c) {
 	return c == server.grab_client ||
@@ -55,7 +79,7 @@ struct fx_corner_radii set_client_corner_location(Client *c) {
 		return current_corner_location;
 
 	struct wlr_box target_geom =
-		config.animations ? c->animation.current : c->geom;
+		client_animations_enabled(c) ? c->animation.current : c->geom;
 	if (target_geom.x + config.border_radius <= c->mon->m.x) {
 		current_corner_location.top_left = 0;
 		current_corner_location.bottom_left = 0;
@@ -112,11 +136,10 @@ int32_t is_special_animation_rule(Client *c) {
 }
 
 void set_overview_enter_animation(Client *c) {
-	struct wlr_box geo = c->geom;
-	c->animainit_geom.width = geo.width * 1.2;
-	c->animainit_geom.height = geo.height * 1.2;
-	c->animainit_geom.x = geo.x + (geo.width - c->animainit_geom.width) / 2;
-	c->animainit_geom.y = geo.y + (geo.height - c->animainit_geom.height) / 2;
+	struct wlr_box start = c->overview_backup_geom;
+	if (start.width <= 0 || start.height <= 0)
+		start = c->animation.current;
+	c->animainit_geom = start;
 }
 
 void set_client_open_animation(Client *c, struct wlr_box geo) {
@@ -126,19 +149,13 @@ void set_client_open_animation(Client *c, struct wlr_box geo) {
 	int32_t special_direction;
 	int32_t center_x, center_y;
 
-	if ((!c->animation_type_open &&
-		 strcmp(config.animation_type_open, "fade") == 0) ||
-		(c->animation_type_open &&
-		 strcmp(c->animation_type_open, "fade") == 0)) {
+	if (client_open_animation_type(c) == ANIM_TYPE_FADE) {
 		c->animainit_geom.width = geo.width;
 		c->animainit_geom.height = geo.height;
 		c->animainit_geom.x = geo.x;
 		c->animainit_geom.y = geo.y;
 		return;
-	} else if ((!c->animation_type_open &&
-				strcmp(config.animation_type_open, "zoom") == 0) ||
-			   (c->animation_type_open &&
-				strcmp(c->animation_type_open, "zoom") == 0)) {
+	} else if (client_open_animation_type(c) == ANIM_TYPE_ZOOM) {
 		c->animainit_geom.width = geo.width * config.zoom_initial_ratio;
 		c->animainit_geom.height = geo.height * config.zoom_initial_ratio;
 		c->animainit_geom.x = geo.x + (geo.width - c->animainit_geom.width) / 2;
@@ -391,9 +408,8 @@ void client_draw_groupbar(Client *c, struct ivec2 offsets) {
 		return;
 
 	if (!c->group_next && !c->group_prev) {
-		if (c->group_bar->scene_buffer->node.enabled)
-			wlr_scene_node_set_enabled(&c->group_bar->scene_buffer->node,
-									   false);
+		if (c->group_bar->scene->node.enabled)
+			wlr_scene_node_set_enabled(&c->group_bar->scene->node, false);
 		return;
 	}
 
@@ -422,8 +438,10 @@ void client_draw_groupbar(Client *c, struct ivec2 offsets) {
 		tab_y = c->mon->m.y;
 		th = config.group_bar_height - top_over;
 	}
-	if (bottom_over > 0)
-		th = th - bottom_over;
+	if (bottom_over > 0) {
+		th = th - GEZERO(bottom_over - c->animation.current.height);
+	}
+
 	if (right_over > 0)
 		tw = tw - right_over;
 	if (left_over > 0) {
@@ -435,8 +453,7 @@ void client_draw_groupbar(Client *c, struct ivec2 offsets) {
 		cur = head;
 		while (cur) {
 			if (cur->group_bar)
-				wlr_scene_node_set_enabled(&cur->group_bar->scene_buffer->node,
-										   false);
+				wlr_scene_node_set_enabled(&cur->group_bar->scene->node, false);
 			cur = cur->group_next;
 		}
 		return;
@@ -498,6 +515,50 @@ void client_draw_shield(Client *c, struct ivec2 clip_box) {
 	wlr_scene_rect_set_size(c->shield, shield_width, shield_height);
 	wlr_scene_node_set_enabled(&c->shield->node, true);
 }
+
+void client_draw_dim(Client *c, struct ivec2 clip_box) {
+	if (!c || !c->dim_node) {
+		return;
+	}
+
+	if (!config.dim_enable) {
+		mango_dim_node_set_enabled(c->dim_node, false);
+		return;
+	}
+
+	int32_t dim_x = 0;
+	int32_t dim_y = 0;
+	int32_t dim_width = 0;
+	int32_t dim_height = 0;
+
+	if (client_is_ignore_output_clip(c)) {
+		dim_width = c->animation.current.width - 2 * (int32_t)c->bw;
+		dim_height = c->animation.current.height - 2 * (int32_t)c->bw;
+	} else {
+		dim_x = clip_box.x;
+		dim_y = clip_box.y;
+		dim_width = c->animation.current.width - 2 * (int32_t)c->bw -
+					clip_box.width - clip_box.x;
+		dim_height = c->animation.current.height - 2 * (int32_t)c->bw -
+					 clip_box.height - clip_box.y;
+	}
+
+	if (dim_width <= 0 || dim_height <= 0) {
+		mango_dim_node_set_enabled(c->dim_node, false);
+		return;
+	}
+
+	int32_t radius = 0;
+	if (!c->isfullscreen && !(config.no_radius_when_single && c->mon &&
+							  c->mon->visible_tiling_clients == 1)) {
+		radius = config.border_radius;
+	}
+
+	mango_dim_node_set_radius(c->dim_node, radius);
+	mango_dim_node_set_enabled(c->dim_node, true);
+	mango_dim_node_set_box(c->dim_node, dim_x, dim_y, dim_width, dim_height);
+}
+
 void client_draw_blur(Client *c, struct ivec2 clip_box) {
 	if (c->isfullscreen) {
 		if (c->blur->node.enabled)
@@ -517,14 +578,20 @@ void client_draw_blur(Client *c, struct ivec2 clip_box) {
 			blur_y = c->bw;
 			blur_width = c->animation.current.width - 2 * (int32_t)c->bw;
 			blur_height = c->animation.current.height - 2 * (int32_t)c->bw;
+		} else {
+			blur_x = clip_box.x + (int32_t)c->bw;
+			blur_y = clip_box.y + (int32_t)c->bw;
+			blur_width = c->animation.current.width - 2 * (int32_t)c->bw -
+						 clip_box.width - clip_box.x;
+			blur_height = c->animation.current.height - 2 * (int32_t)c->bw -
+						  clip_box.height - clip_box.y;
 		}
 
-		blur_x = clip_box.x + (int32_t)c->bw;
-		blur_y = clip_box.y + (int32_t)c->bw;
-		blur_width = c->animation.current.width - 2 * (int32_t)c->bw -
-					 clip_box.width - clip_box.x;
-		blur_height = c->animation.current.height - 2 * (int32_t)c->bw -
-					  clip_box.height - clip_box.y;
+		if (blur_width <= 0 || blur_height <= 0) {
+			wlr_scene_node_set_enabled(&c->blur->node, false);
+			return;
+		}
+
 		wlr_scene_node_set_enabled(&c->blur->node, true);
 		wlr_scene_node_set_position(&c->blur->node, blur_x, blur_y);
 		wlr_scene_blur_set_size(c->blur, blur_width, blur_height);
@@ -538,7 +605,7 @@ void global_draw_group_bar(Client *c, int32_t x, int32_t y, int32_t width,
 	if (!c->group_bar)
 		return;
 
-	wlr_scene_node_set_position(&c->group_bar->scene_buffer->node, x, y);
+	wlr_scene_node_set_position(&c->group_bar->scene->node, x, y);
 	mango_group_bar_set_size(c->group_bar, width, height);
 }
 void client_draw_split_border(Client *c, bool hit_no_border,
@@ -714,7 +781,8 @@ struct ivec2 clip_to_hide(Client *c, struct wlr_box *clip_box,
 		(ISSCROLLTILED(c) || c->animation.tagouting || c->animation.tagining)) {
 		c->is_clip_to_hide = true;
 		wlr_scene_node_set_enabled(&c->scene->node, false);
-	} else if (c->is_clip_to_hide && VISIBLEON(c, c->mon)) {
+	} else if (c->is_clip_to_hide &&
+			   (VISIBLEON(c, c->mon) || client_gesture_driven(c))) {
 		c->is_clip_to_hide = false;
 		wlr_scene_node_set_enabled(&c->scene->node, true);
 	}
@@ -744,6 +812,11 @@ void client_set_drop_area(Client *c) {
 	int32_t bw = (int32_t)c->bw;
 	int32_t client_width = c->geom.width - 2 * bw;
 	int32_t client_height = c->geom.height - 2 * bw;
+
+	if (client_width <= 0 || client_height <= 0) {
+		wlr_scene_node_set_enabled(&c->droparea->node, false);
+		return;
+	}
 
 	double rel_x = server.cursor->x - c->geom.x - bw;
 	double rel_y = server.cursor->y - c->geom.y - bw;
@@ -919,7 +992,10 @@ void client_apply_clip(Client *c, float factor) {
 
 		struct wlr_box clip_box;
 		struct ivec2 surface_clip_offset;
-		client_get_clip(c, &clip_box);
+		int32_t card_w, card_h;
+		client_actual_size(c, &card_w, &card_h);
+		clip_box =
+			(struct wlr_box){.x = 0, .y = 0, .width = card_w, .height = card_h};
 		surface_clip_offset = clip_to_hide(c, &clip_box, offsets);
 
 		/* Decorations are drawn against the card geometry. */
@@ -928,6 +1004,7 @@ void client_apply_clip(Client *c, float factor) {
 		client_draw_groupbar(c, offsets);
 		client_draw_blur(c, surface_clip_offset);
 		client_draw_shield(c, surface_clip_offset);
+		client_draw_dim(c, surface_clip_offset);
 
 		overview_layout_card(c);
 		overview_card_set_corner_radii(c, set_client_corner_location(c));
@@ -944,8 +1021,10 @@ void client_apply_clip(Client *c, float factor) {
 	struct fx_corner_radii current_corner_location =
 		set_client_corner_location(c);
 
-	if (!config.animations && !c->overview_scene_surface) {
+	if (!client_animations_enabled(c) && !c->overview_scene_surface) {
 		c->animation.running = false;
+		c->animation.tagining = false;
+		c->animation.tagouting = false;
 		c->need_output_flush = false;
 		c->animainit_geom = c->current = c->pending = c->animation.current =
 			c->geom;
@@ -958,6 +1037,7 @@ void client_apply_clip(Client *c, float factor) {
 		client_draw_groupbar(c, offsets);
 		client_draw_blur(c, surface_clip_offset);
 		client_draw_shield(c, surface_clip_offset);
+		client_draw_dim(c, surface_clip_offset);
 
 		if (clip_box.width <= 0 || clip_box.height <= 0) {
 			should_render_client_surface = false;
@@ -1010,6 +1090,7 @@ void client_apply_clip(Client *c, float factor) {
 	client_draw_shadow(c, offsets);
 	client_draw_groupbar(c, offsets);
 	client_draw_shield(c, surface_clip_offset);
+	client_draw_dim(c, surface_clip_offset);
 	client_draw_blur(c, surface_clip_offset);
 	/*
 	 * During animation, sync the X11 root surface dest_size / clipping
@@ -1064,6 +1145,7 @@ void client_apply_clip(Client *c, float factor) {
 
 	buffer_set_effect(c, buffer_data);
 }
+
 void fadeout_client_animation_next_tick(Client *c) {
 	if (!c)
 		return;
@@ -1108,10 +1190,7 @@ void fadeout_client_animation_next_tick(Client *c) {
 		wlr_scene_node_for_each_buffer(&c->scene->node,
 									   scene_buffer_apply_opacity, &opacity);
 
-	if ((c->animation_type_close &&
-		 strcmp(c->animation_type_close, "zoom") == 0) ||
-		(!c->animation_type_close &&
-		 strcmp(config.animation_type_close, "zoom") == 0)) {
+	if (client_close_animation_type(c) == ANIM_TYPE_ZOOM) {
 		BufferData buffer_data;
 		buffer_data.width = width;
 		buffer_data.height = height;
@@ -1173,6 +1252,8 @@ void client_animation_next_tick(Client *c) {
 			c->animation.current = c->geom;
 		}
 
+		client_apply_clip(c, 1.0f);
+
 		Client *pointer_c = NULL;
 		double sx, sy;
 		node_at_point(server.cursor->x, server.cursor->y, NULL, &pointer_c,
@@ -1197,13 +1278,12 @@ void init_fadeout_client(Client *c) {
 	if (c->shield_when_capture && server.active_capture_count > 0)
 		return;
 
-	if ((c->animation_type_close &&
-		 strcmp(c->animation_type_close, "none") == 0) ||
-		(!c->animation_type_close &&
-		 strcmp(config.animation_type_close, "none") == 0))
+	if (client_close_animation_type(c) == ANIM_TYPE_NONE)
 		return;
 
 	Client *fadeout_client = ecalloc(1, sizeof(*fadeout_client));
+	fadeout_client->animation_type_open = ANIM_TYPE_UNSET;
+	fadeout_client->animation_type_close = ANIM_TYPE_UNSET;
 
 	wlr_scene_node_set_enabled(&c->scene->node, true);
 	client_set_border_color(c, config.bordercolor);
@@ -1246,22 +1326,16 @@ void init_fadeout_client(Client *c) {
 	fadeout_client->animation.initial.x = 0;
 	fadeout_client->animation.initial.y = 0;
 
-	if ((!c->animation_type_close &&
-		 strcmp(config.animation_type_close, "fade") == 0) ||
-		(c->animation_type_close &&
-		 strcmp(c->animation_type_close, "fade") == 0)) {
+	if (client_close_animation_type(c) == ANIM_TYPE_FADE) {
 		fadeout_client->current.x = 0;
 		fadeout_client->current.y = 0;
 		fadeout_client->current.width = 0;
 		fadeout_client->current.height = 0;
-	} else if ((c->animation_type_close &&
-				strcmp(c->animation_type_close, "slide") == 0) ||
-			   (!c->animation_type_close &&
-				strcmp(config.animation_type_close, "slide") == 0)) {
+	} else if (client_close_animation_type(c) == ANIM_TYPE_SLIDE) {
 		fadeout_client->current.y =
-			c->geom.y + c->geom.height / 2 > c->mon->m.y + c->mon->m.height / 2
-				? c->mon->m.height - (c->animation.current.y - c->mon->m.y)
-				: c->mon->m.y - c->geom.height;
+			c->geom.y + c->geom.height / 2 >= c->mon->m.y + c->mon->m.height / 2
+				? c->mon->m.y + c->mon->m.height - c->animation.current.y
+				: c->mon->m.y - c->geom.height - c->animation.current.y;
 		fadeout_client->current.x = 0;
 	} else {
 		fadeout_client->current.y =
@@ -1294,6 +1368,67 @@ void client_apply_finish_geometry(Client *c) {
 	client_apply_clip(c, 1.0);
 	c->need_output_flush = false;
 }
+void client_animation_set_progress(Client *c, double p) {
+	if (!c || !c->scene)
+		return;
+
+	if (p < 0.0)
+		p = 0.0;
+	if (p > 1.0)
+		p = 1.0;
+
+	const struct wlr_box *from = &c->animation.initial;
+	const struct wlr_box *to = &c->current;
+
+	int32_t width =
+		(int32_t)llround(from->width + (to->width - from->width) * p);
+	int32_t height =
+		(int32_t)llround(from->height + (to->height - from->height) * p);
+	int32_t x = (int32_t)llround(from->x + (to->x - from->x) * p);
+	int32_t y = (int32_t)llround(from->y + (to->y - from->y) * p);
+
+	wlr_scene_node_set_position(&c->scene->node, x, y);
+	c->animation.current = (struct wlr_box){
+		.x = x,
+		.y = y,
+		.width = width,
+		.height = height,
+	};
+
+	c->is_pending_open_animation = false;
+	client_apply_clip(c, 1.0f);
+}
+void client_animation_resume(Client *c, double remaining) {
+	if (!c || !c->scene)
+		return;
+
+	if (!c->animation.running)
+		return;
+
+	if (!config.animations || c->animation.duration == 0 || remaining < 0.05) {
+		client_animation_set_progress(c, 1.0);
+		c->animation.action = MOVE;
+		c->animation.tagining = false;
+		c->animation.overining = false;
+		c->animation.running = false;
+		if (c->animation.tagouting) {
+			c->animation.tagouting = false;
+			wlr_scene_node_set_enabled(&c->scene->node, false);
+			c->animation.tagouted = true;
+			c->animation.current = c->geom;
+		}
+		c->need_output_flush = false;
+		return;
+	}
+
+	c->animation.initial = c->animation.current;
+	c->animation.duration =
+		(uint32_t)MANGO_MAX(1, (int32_t)(c->animation.duration * remaining));
+	c->animation.time_started = get_now_in_ms();
+	c->animation.running = true;
+	c->need_output_flush = true;
+	request_fresh_all_monitors();
+}
 void client_commit(Client *c) {
 	c->current = c->pending;
 
@@ -1314,7 +1449,7 @@ void client_commit(Client *c) {
 	// When animation is disabled, set the surface position and size early
 	// so pointer_process_motion focus does not hit the surface from the
 	// previous frame.
-	if (!config.animations)
+	if (!client_animations_enabled(c))
 		client_apply_finish_geometry(c);
 
 	request_fresh_all_monitors();
@@ -1323,11 +1458,11 @@ void client_set_pending_state(Client *c) {
 	if (!c || c->iskilling)
 		return;
 
-	if (!config.animations)
+	if (!client_animations_enabled(c))
 		c->animation.should_animate = false;
-	else if (config.animations && c->animation.tagining)
+	else if (c->animation.tagining)
 		c->animation.should_animate = true;
-	else if (config.animations && c->animation.action == OVERVIEW &&
+	else if (c->animation.action == OVERVIEW &&
 			 c->animation.overview_enter_anim_set)
 		/* Overview enter animation: force start after setting the zoom; not
 		 * forced during pre-arrangement to avoid jitter. */
@@ -1339,10 +1474,7 @@ void client_set_pending_state(Client *c) {
 	else
 		c->animation.should_animate = true;
 
-	if (((c->animation_type_open &&
-		  strcmp(c->animation_type_open, "none") == 0) ||
-		 (!c->animation_type_open &&
-		  strcmp(config.animation_type_open, "none") == 0)) &&
+	if (client_open_animation_type(c) == ANIM_TYPE_NONE &&
 		c->animation.action == OPEN)
 		c->animation.duration = 0;
 
@@ -1391,10 +1523,11 @@ void resize_apply(Client *c, struct wlr_box geo, ResizeOpts opts) {
 	if (!c->is_pending_open_animation)
 		c->animation.begin_fade_in = false;
 
-	if (c->animation.overining)
+	if (c->animation.overining) {
 		c->animation.action = OVERVIEW;
-	else if (c->animation.action == OPEN && !c->animation.tagining &&
-			 !c->animation.tagouting && wlr_box_equal(&c->geom, &c->current))
+		c->animation.duration = config.animation_duration_tag;
+	} else if (c->animation.action == OPEN && !c->animation.tagining &&
+			   !c->animation.tagouting && wlr_box_equal(&c->geom, &c->current))
 		; /* keep current action */
 	else if (c->animation.tagouting) {
 		c->animation.duration = config.animation_duration_tag;
@@ -1440,6 +1573,8 @@ void resize_apply(Client *c, struct wlr_box geo, ResizeOpts opts) {
 		struct ivec2 offsets = compute_edge_offsets(c);
 
 		c->animation.running = false;
+		c->animation.tagining = false;
+		c->animation.tagouting = false;
 		c->need_output_flush = false;
 		c->animainit_geom = c->current = c->pending = c->animation.current =
 			c->geom;
@@ -1452,6 +1587,7 @@ void resize_apply(Client *c, struct wlr_box geo, ResizeOpts opts) {
 
 		struct ivec2 surface_clip_offset = clip_to_hide(c, &clip, offsets);
 		client_draw_shield(c, surface_clip_offset);
+		client_draw_dim(c, surface_clip_offset);
 		client_draw_blur(c, surface_clip_offset);
 
 		if (client_is_x11(c))
@@ -1477,20 +1613,11 @@ void resize_apply(Client *c, struct wlr_box geo, ResizeOpts opts) {
 	if (c->scratchpad_switching_mon && c->isfloating)
 		c->animainit_geom = c->geom;
 
-	if (!opts.skip_ov_enter_anim) {
-		/* Clears the enter-animation flag (including the focused window) to
-		 * avoid re-zooming when focus changes. */
-		if (config.animations && c->mon->isoverview && c->animation.overining &&
-			!c->animation.overview_enter_anim_set)
-			c->animation.overining = false;
-
-		/* Sets the enter zoom animation for all windows except sel. */
-		if (config.animations && c->mon->isoverview && c != c->mon->sel &&
-			c->animation.action == OVERVIEW &&
-			!c->animation.overview_enter_anim_set) {
-			c->animation.overview_enter_anim_set = true;
-			set_overview_enter_animation(c);
-		}
+	if (!opts.skip_ov_enter_anim && c->mon->isoverview &&
+		c->animation.overining && !c->animation.overview_enter_anim_set) {
+		set_overview_enter_animation(c);
+		c->animation.overining = false;
+		c->animation.overview_enter_anim_set = true;
 	}
 
 	client_set_pending_state(c);
@@ -1505,31 +1632,77 @@ bool client_draw_fadeout_frame(Client *c) {
 	return true;
 }
 
-void client_set_unfocused_opacity_animation(Client *c) {
+void client_start_focus_animation(Client *c, bool focused) {
 	float *border_color = get_border_color(c);
+	float *dim_color = get_dim_color(c);
+
+	c->opacity_animation.duration = config.animation_duration_focus;
+	c->opacity_animation.target_opacity =
+		focused ? c->focused_opacity : c->unfocused_opacity;
+	memcpy(c->opacity_animation.target_border_color, border_color,
+		   sizeof(c->opacity_animation.target_border_color));
+	memcpy(c->opacity_animation.target_dim_color, dim_color,
+		   sizeof(c->opacity_animation.target_dim_color));
+	c->opacity_animation.initial_opacity = c->opacity_animation.current_opacity;
+	memcpy(c->opacity_animation.initial_border_color,
+		   c->opacity_animation.current_border_color,
+		   sizeof(c->opacity_animation.initial_border_color));
+	memcpy(c->opacity_animation.initial_dim_color,
+		   c->opacity_animation.current_dim_color,
+		   sizeof(c->opacity_animation.initial_dim_color));
+	c->opacity_animation.time_started = get_now_in_ms();
+	c->opacity_animation.running = true;
+}
+
+static void client_interpolate_focus_animation(Client *c,
+											   double linear_progress) {
+	double eased_progress = find_animation_curve_at(linear_progress, FOCUS);
+
+	c->opacity_animation.current_opacity =
+		c->opacity_animation.initial_opacity +
+		(c->opacity_animation.target_opacity -
+		 c->opacity_animation.initial_opacity) *
+			eased_progress;
+
+	for (int32_t i = 0; i < 4; i++) {
+		c->opacity_animation.current_border_color[i] =
+			c->opacity_animation.initial_border_color[i] +
+			(c->opacity_animation.target_border_color[i] -
+			 c->opacity_animation.initial_border_color[i]) *
+				eased_progress;
+		c->opacity_animation.current_dim_color[i] =
+			c->opacity_animation.initial_dim_color[i] +
+			(c->opacity_animation.target_dim_color[i] -
+			 c->opacity_animation.initial_dim_color[i]) *
+				eased_progress;
+	}
+}
+
+bool client_step_focus_animation(Client *c, double linear_progress) {
+	client_interpolate_focus_animation(c, linear_progress);
+
+	client_set_opacity(c, c->opacity_animation.current_opacity);
+	client_set_state_colors(c, c->opacity_animation.current_border_color,
+							c->opacity_animation.current_dim_color);
+
+	c->opacity_animation.running = linear_progress < 1.0;
+	return c->opacity_animation.running;
+}
+
+void client_set_unfocused_opacity_animation(Client *c) {
 	wlr_scene_node_raise_to_top(&c->border->node);
 	if (!config.animations) {
 		client_update_border_color(c);
 		return;
 	}
 
-	c->opacity_animation.duration = config.animation_duration_focus;
-	memcpy(c->opacity_animation.target_border_color, border_color,
-		   sizeof(c->opacity_animation.target_border_color));
-	c->opacity_animation.target_opacity = c->unfocused_opacity;
-	c->opacity_animation.time_started = get_now_in_ms();
-	memcpy(c->opacity_animation.initial_border_color,
-		   c->opacity_animation.current_border_color,
-		   sizeof(c->opacity_animation.initial_border_color));
-	c->opacity_animation.initial_opacity = c->opacity_animation.current_opacity;
-	c->opacity_animation.running = true;
+	client_start_focus_animation(c, false);
 }
 void resize(Client *c, struct wlr_box geo, int32_t interact) {
 	resize_apply(c, geo, (ResizeOpts){.interact = interact});
 }
 
 void client_set_focused_opacity_animation(Client *c) {
-	float *border_color = get_border_color(c);
 	wlr_scene_node_lower_to_bottom(&c->border->node);
 
 	if (!config.animations) {
@@ -1537,16 +1710,7 @@ void client_set_focused_opacity_animation(Client *c) {
 		return;
 	}
 
-	c->opacity_animation.duration = config.animation_duration_focus;
-	memcpy(c->opacity_animation.target_border_color, border_color,
-		   sizeof(c->opacity_animation.target_border_color));
-	c->opacity_animation.target_opacity = c->focused_opacity;
-	c->opacity_animation.time_started = get_now_in_ms();
-	memcpy(c->opacity_animation.initial_border_color,
-		   c->opacity_animation.current_border_color,
-		   sizeof(c->opacity_animation.initial_border_color));
-	c->opacity_animation.initial_opacity = c->opacity_animation.current_opacity;
-	c->opacity_animation.running = true;
+	client_start_focus_animation(c, true);
 }
 
 bool client_apply_focus_opacity(Client *c) {
@@ -1562,7 +1726,6 @@ bool client_apply_focus_opacity(Client *c) {
 		c->opacity_animation.running = false;
 		client_set_opacity(c, 1);
 	} else if (c->animation.running && c->animation.action == OPEN) {
-		c->opacity_animation.running = false;
 		struct timespec now;
 		clock_gettime(CLOCK_MONOTONIC, &now);
 
@@ -1582,12 +1745,33 @@ bool client_apply_focus_opacity(Client *c) {
 							: c->unfocused_opacity;
 		float target_opacity = percent * (1.0 - config.fadein_begin_opacity) +
 							   config.fadein_begin_opacity;
+
+		if (config.animations && c->opacity_animation.running) {
+			int32_t focus_passed =
+				timespec_to_ms(&now) - c->opacity_animation.time_started;
+			double focus_progress =
+				c->opacity_animation.duration
+					? (double)focus_passed /
+						  (double)c->opacity_animation.duration
+					: 1.0;
+
+			client_interpolate_focus_animation(c, focus_progress);
+			opacity = c->opacity_animation.current_opacity;
+			if (focus_progress >= 1.0) {
+				c->opacity_animation.running = false;
+			}
+		} else {
+			memcpy(c->opacity_animation.current_border_color,
+				   c->opacity_animation.target_border_color,
+				   sizeof(c->opacity_animation.current_border_color));
+			memcpy(c->opacity_animation.current_dim_color,
+				   c->opacity_animation.target_dim_color,
+				   sizeof(c->opacity_animation.current_dim_color));
+		}
+
 		if (target_opacity > opacity)
 			target_opacity = opacity;
 
-		memcpy(c->opacity_animation.current_border_color,
-			   c->opacity_animation.target_border_color,
-			   sizeof(c->opacity_animation.current_border_color));
 		c->opacity_animation.current_opacity = target_opacity;
 		client_set_opacity(c, target_opacity);
 		if (config.blur && !c->noblur && !config.blur_optimized) {
@@ -1598,7 +1782,8 @@ bool client_apply_focus_opacity(Client *c) {
 			wlr_scene_blur_set_strength(c->blur, blur_val);
 			wlr_scene_blur_set_alpha(c->blur, blur_val);
 		}
-		client_set_border_color(c, c->opacity_animation.target_border_color);
+		client_set_state_colors(c, c->opacity_animation.current_border_color,
+								c->opacity_animation.current_dim_color);
 	} else if (config.animations && c->opacity_animation.running) {
 		struct timespec now;
 		clock_gettime(CLOCK_MONOTONIC, &now);
@@ -1610,38 +1795,23 @@ bool client_apply_focus_opacity(Client *c) {
 				? (double)passed_time / (double)c->opacity_animation.duration
 				: 1.0;
 
-		float eased_progress = find_animation_curve_at(linear_progress, FOCUS);
-
-		c->opacity_animation.current_opacity =
-			c->opacity_animation.initial_opacity +
-			(c->opacity_animation.target_opacity -
-			 c->opacity_animation.initial_opacity) *
-				eased_progress;
-		client_set_opacity(c, c->opacity_animation.current_opacity);
-
-		for (int32_t i = 0; i < 4; i++) {
-			c->opacity_animation.current_border_color[i] =
-				c->opacity_animation.initial_border_color[i] +
-				(c->opacity_animation.target_border_color[i] -
-				 c->opacity_animation.initial_border_color[i]) *
-					eased_progress;
-		}
-		client_set_border_color(c, c->opacity_animation.current_border_color);
-		if (linear_progress >= 1.0f)
-			c->opacity_animation.running = false;
-		else
+		if (client_step_focus_animation(c, linear_progress))
 			return true;
 	} else if (c == server.selected_monitor->sel) {
 		c->opacity_animation.running = false;
 		c->opacity_animation.current_opacity = c->focused_opacity;
 		memcpy(c->opacity_animation.current_border_color, border_color,
 			   sizeof(c->opacity_animation.current_border_color));
+		memcpy(c->opacity_animation.current_dim_color, get_dim_color(c),
+			   sizeof(c->opacity_animation.current_dim_color));
 		client_set_opacity(c, c->focused_opacity);
 	} else {
 		c->opacity_animation.running = false;
 		c->opacity_animation.current_opacity = c->unfocused_opacity;
 		memcpy(c->opacity_animation.current_border_color, border_color,
 			   sizeof(c->opacity_animation.current_border_color));
+		memcpy(c->opacity_animation.current_dim_color, get_dim_color(c),
+			   sizeof(c->opacity_animation.current_dim_color));
 		client_set_opacity(c, c->unfocused_opacity);
 	}
 
@@ -1659,6 +1829,11 @@ bool client_draw_frame(Client *c) {
 	if (c->force_render && !c->scene->node.enabled) {
 		force_render = client_force_render(c);
 		need_next_tick = force_render || need_next_tick;
+	}
+
+	if (server.gesture_drive_active && c->mon == server.gesture_drive_mon &&
+		c->animation.running && c->need_output_flush) {
+		return client_apply_focus_opacity(c);
 	}
 
 	if (!c->need_output_flush)

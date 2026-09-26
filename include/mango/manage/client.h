@@ -211,6 +211,7 @@ struct Client {
 	float scroller_proportion_single;
 	bool isfocusing;
 	char jump_char;
+	MultiKeycode jump_keycodes;
 	bool enable_drop_area_draw;
 	int32_t drop_direction;
 	struct wlr_box drag_tile_float_backup_geom;
@@ -457,6 +458,8 @@ void xwayland_logical_to_x11(struct wlr_box *box, float scale);
 
 /* X11 physical size -> Wayland logical coordinates (logical = X11 / scale). */
 void xwayland_x11_to_logical(struct wlr_box *box, float scale);
+
+void client_get_x11_geometry(Client *c, struct wlr_box *xgeo);
 void fix_xwayland_coordinate(struct wlr_box *geom);
 void handle_xwayland_surface_request_activate(struct wl_listener *listener,
 											  void *data);

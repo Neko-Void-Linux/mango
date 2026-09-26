@@ -144,6 +144,16 @@ bool is_centertile_layout(Monitor *m) {
 	return false;
 }
 
+void special_sync_top_layer(bool special_active) {
+	if (special_active) {
+		wlr_scene_node_reparent(&server.layers[LyrTop]->node,
+								server.layers_wrap[LyrSpecialTop]);
+	} else {
+		wlr_scene_node_reparent(&server.layers[LyrTop]->node,
+								server.layers_wrap[LyrTop]);
+	}
+}
+
 // sync the special overlay dim layer to the monitor and view state
 void special_update_dim(Monitor *m) {
 	if (!m || !m->special_dim_rect)
@@ -897,7 +907,7 @@ void monitor_close(Monitor *m) {
 	/* update selected_monitor if needed and
 	 * move closed monitor's clients to the focused one */
 	Client *c = NULL;
-	int32_t i = 0, nmons = wl_list_length(&server.monitors);
+	int32_t nmons = wl_list_length(&server.monitors);
 
 	if (server.gesture_drive_mon == m) {
 		server.gesture_drive_active = false;
@@ -911,11 +921,16 @@ void monitor_close(Monitor *m) {
 	if (!nmons) {
 		set_selected_monitor(NULL);
 	} else if (m == server.selected_monitor) {
-		Monitor *next;
-		do /* don't switch to disabled monitors */
-			next = wl_container_of(server.monitors.next, next, link);
-		while (!next->wlr_output->enabled && i++ < nmons);
-		set_selected_monitor(next->wlr_output->enabled ? next : NULL);
+		Monitor *next = NULL;
+		Monitor *cand = NULL, *tmp = NULL;
+		/* don't switch to disabled monitors */
+		wl_list_for_each_safe(cand, tmp, &server.monitors, link) {
+			if (cand->wlr_output->enabled) {
+				next = cand;
+				break;
+			}
+		}
+		set_selected_monitor(next);
 	}
 
 	wl_list_for_each(c, &server.clients, link) {

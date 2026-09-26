@@ -86,6 +86,7 @@ typedef struct {
 	xkb_keysym_t keysym;
 	MultiKeycode keycode;
 	int32_t type;
+	bool unresolved;
 } KeySymCode;
 
 typedef struct {
@@ -246,6 +247,7 @@ typedef struct {
 	uint32_t button_map;
 	int32_t disable_while_typing;
 	char monitor[128];
+	int32_t map_focus_monitor;
 } ConfigDeviceRule;
 
 typedef struct {
@@ -611,6 +613,11 @@ int64_t parse_color(const char *hex_str);
 uint32_t parse_mod(const char *mod_str);
 
 void cleanup_config_keymap(void);
+
+int32_t find_keycodes_for_keysym(struct xkb_keymap *keymap, xkb_keysym_t sym,
+								 MultiKeycode *multi_kc);
+
+int32_t find_keycodes_for_char(char c_char, MultiKeycode *multi_kc);
 
 KeySymCode parse_key(const char *key_str, bool isbindsym);
 

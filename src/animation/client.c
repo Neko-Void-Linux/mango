@@ -521,6 +521,11 @@ void client_draw_dim(Client *c, struct ivec2 clip_box) {
 		return;
 	}
 
+	if (c->isfullscreen) {
+		mango_dim_node_set_enabled(c->dim_node, false);
+		return;
+	}
+
 	if (!config.dim_enable) {
 		mango_dim_node_set_enabled(c->dim_node, false);
 		return;
@@ -701,14 +706,6 @@ void client_draw_border(Client *c, struct ivec2 offsets) {
 							c->mon->visible_tiling_clients == 1)
 			? corner_radii_none()
 			: set_client_corner_location(c);
-
-	if (hit_no_border) {
-		c->bw = 0;
-		c->fake_no_border = true;
-	} else if (!c->isfullscreen && VISIBLEON(c, c->mon)) {
-		c->bw = c->isnoborder ? 0 : config.borderpx;
-		c->fake_no_border = false;
-	}
 
 	struct wlr_box cur = c->animation.current;
 	int32_t bw = (int32_t)c->bw;
@@ -1250,9 +1247,12 @@ void client_animation_next_tick(Client *c) {
 			wlr_scene_node_set_enabled(&c->scene->node, false);
 			c->animation.tagouted = true;
 			c->animation.current = c->geom;
+			client_apply_clip(c, 1.0f);
+		} else {
+			/* Snap to the final box: an interpolated one can be a pixel off,
+			 * which leaves X11 content stretched (blurry). */
+			client_apply_finish_geometry(c);
 		}
-
-		client_apply_clip(c, 1.0f);
 
 		Client *pointer_c = NULL;
 		double sx, sy;
@@ -1554,11 +1554,15 @@ void resize_apply(Client *c, struct wlr_box geo, ResizeOpts opts) {
 
 	if (c->isnoborder || c->iskilling)
 		c->bw = 0;
+	else if (!c->isfullscreen)
+		c->bw = config.borderpx;
 
 	bool hit_no_border = check_hit_no_border(c);
 	if (hit_no_border) {
 		c->bw = 0;
 		c->fake_no_border = true;
+	} else {
+		c->fake_no_border = false;
 	}
 
 	if (!c->mon->isoverview)

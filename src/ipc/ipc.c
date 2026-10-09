@@ -568,7 +568,7 @@ cJSON *build_client_json(Client *c) {
 	cJSON_AddBoolToObject(obj, "is_xwayland", c->type == X11 ? true : false);
 	cJSON_AddBoolToObject(obj, "is_swallowing", c->swallowing ? true : false);
 	cJSON_AddBoolToObject(obj, "is_swallowedby", c->swallowdby ? true : false);
-	cJSON_AddBoolToObject(obj, "is_group", c->group_prev || c->group_next);
+	cJSON_AddBoolToObject(obj, "is_group", client_is_group_member(c));
 	cJSON_AddBoolToObject(obj, "is_visible", c->mon && VISIBLEON(c, c->mon));
 	cJSON_AddBoolToObject(obj, "is_focused", c->isfocusing);
 	cJSON_AddBoolToObject(obj, "is_fullscreen", c->isfullscreen);
@@ -846,15 +846,21 @@ void handle_command(int client_fd, const char *cmd_raw) {
 		char *dispatch_copy = strdup(cmd_raw + 9);
 		char *out = dispatch_copy, *ptr = dispatch_copy;
 		int client_id = -1;
+		bool field_start = true;
 
 		while (*ptr) {
-			while (*ptr == ' ' || *ptr == '\t')
+			while (*ptr == ' ' || *ptr == '\t') {
 				*out++ = *ptr++;
+				field_start = true;
+			}
+			if (*ptr == '\0')
+				break;
 
-			if (strncmp(ptr, "client,", 7) == 0) {
+			if (field_start && strncmp(ptr, "client,", 7) == 0) {
 				char *end;
 				long id = strtol(ptr + 7, &end, 10);
-				if (id > 0 && end > ptr + 7 && (*end == '\0' || *end == ',')) {
+				if (id > 0 && end > ptr + 7 &&
+					(*end == '\0' || *end == ',')) {
 					client_id = (int)id;
 					ptr = end;
 					if (*ptr == ',')
@@ -862,6 +868,7 @@ void handle_command(int client_fd, const char *cmd_raw) {
 					continue;
 				}
 			}
+			field_start = *ptr == ',';
 			*out++ = *ptr++;
 		}
 		*out = '\0';

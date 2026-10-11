@@ -993,7 +993,7 @@ static void client_begin_drag_float(Client *c) {
 	c->drag_tile_float_backup_geom = c->float_geom;
 	c->old_stack_inner_per = 0.0f;
 	c->old_master_inner_per = 0.0f;
-	set_size_per(c->mon, c);
+	set_size_per(c->mon, c, false);
 }
 
 bool pointer_begin_move_resize(Client *gc, uint32_t mode, double x, double y,
@@ -1369,8 +1369,8 @@ void pointer_process_motion(uint32_t time, struct wlr_input_device *device,
 		if (server.grab_client->isfloating) {
 			server.grab_client->iscustomsize = 1;
 			if (server.last_apply_drag_time == 0 ||
-				time - server.last_apply_drag_time >
-					config.drag_floating_refresh_interval) {
+				time - server.last_apply_drag_time >=
+					drag_refresh_interval_ms(server.grab_client->mon)) {
 				pointer_resize_floating_window(
 					server.grab_client, server.cursor->x, server.cursor->y);
 				server.last_apply_drag_time = time;

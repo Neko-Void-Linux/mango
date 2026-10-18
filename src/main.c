@@ -940,6 +940,35 @@ void setup(void) {
 	config_error_nag_init();
 }
 
+/* If no D-Bus session bus is detected, restart the whole session (mango plus
+ * everything it spawns) under dbus-run-session, which starts a session bus
+ * and exports DBUS_SESSION_BUS_ADDRESS for the children. */
+static void exec_with_dbus_if_needed(int32_t argc, char *argv[]) {
+	const char *addr = getenv("DBUS_SESSION_BUS_ADDRESS");
+	if (addr && *addr)
+		return;
+
+	mango_error(true, WLR_INFO,
+				"No D-Bus session bus detected, restarting the session "
+				"under dbus-run-session");
+
+	char **new_argv = malloc((argc + 2) * sizeof(char *));
+	if (!new_argv)
+		die("dbus: failed to allocate argument array");
+
+	new_argv[0] = "dbus-run-session";
+	for (int32_t i = 0; i < argc; i++)
+		new_argv[i + 1] = argv[i];
+	new_argv[argc + 1] = NULL;
+
+	execvp(new_argv[0], new_argv);
+	mango_error(true, WLR_ERROR,
+				"Failed to exec dbus-run-session (%s), continuing without "
+				"a D-Bus session bus",
+				strerror(errno));
+	free(new_argv);
+}
+
 int32_t main(int32_t argc, char *argv[]) {
 	char *startup_cmd = NULL;
 	int32_t c;
@@ -973,6 +1002,8 @@ int32_t main(int32_t argc, char *argv[]) {
 
 	if (check_config)
 		return parse_config() ? EXIT_SUCCESS : EXIT_FAILURE;
+
+	exec_with_dbus_if_needed(argc, argv);
 
 	increase_nofile_limit();
 

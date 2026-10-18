@@ -3,6 +3,7 @@
 #include "mango/common/util.h"
 #include "mango/manage/client.h"
 #include "mango/manage/monitor.h"
+#include "mango/manage/title-message-bar.h"
 #include <scenefx/types/wlr_scene.h>
 #include <wlr/types/wlr_alpha_modifier_v1.h>
 #include <wlr/types/wlr_color_management_v1.h>
@@ -32,17 +33,26 @@ void switcher_tile_layout(struct switcher_tile *tile) {
 	wl_list_for_each(entry, &tile->surfaces, link) {
 		struct wlr_surface *s = entry->surface;
 		if (entry->is_root) {
-			float ratio_x =
-				s->current.width > 0
-					? (float)s->current.buffer_width / s->current.width
-					: 1.0f;
-			float ratio_y =
-				s->current.height > 0
-					? (float)s->current.buffer_height / s->current.height
-					: 1.0f;
+			/*
+			 * A client may advertise a buffer whose size differs from the
+			 * surface size and restrict which part of that buffer is shown
+			 * (wp_viewporter, buffer scale).
+			 * wlr_surface_get_buffer_source_box() provides that mapping; both
+			 * its offset and its size are required, since deriving the source
+			 * box from the buffer dimensions alone samples an incorrect region.
+			 */
+			struct wlr_fbox bsrc = {0};
+			wlr_surface_get_buffer_source_box(s, &bsrc);
+			/* Buffer pixels per unit of surface size. */
+			float ratio_x = s->current.width > 0
+								? (float)bsrc.width / s->current.width
+								: 1.0f;
+			float ratio_y = s->current.height > 0
+								? (float)bsrc.height / s->current.height
+								: 1.0f;
 			struct wlr_fbox src = {
-				.x = clip.x * ratio_x,
-				.y = clip.y * ratio_y,
+				.x = bsrc.x + clip.x * ratio_x,
+				.y = bsrc.y + clip.y * ratio_y,
 				.width = src_w * ratio_x,
 				.height = src_h * ratio_y,
 			};
@@ -256,10 +266,14 @@ void switcher_layout(void) {
 
 	int panel_w = content_w + 2 * SW_MARGIN;
 	int panel_h = 2 * SW_MARGIN + nrows * frame_h + (nrows - 1) * SW_GAP;
-	wlr_scene_node_set_position(
-		&switcher_state.tree->node,
-		switcher_state.mon->m.x + (switcher_state.mon->m.width - panel_w) / 2,
-		switcher_state.mon->m.y + (switcher_state.mon->m.height - panel_h) / 2);
+	switcher_state.panel_x =
+		switcher_state.mon->m.x + (switcher_state.mon->m.width - panel_w) / 2;
+	switcher_state.panel_y =
+		switcher_state.mon->m.y + (switcher_state.mon->m.height - panel_h) / 2;
+	switcher_state.panel_w = panel_w;
+	switcher_state.panel_h = panel_h;
+	wlr_scene_node_set_position(&switcher_state.tree->node,
+								switcher_state.panel_x, switcher_state.panel_y);
 	wlr_scene_rect_set_size(switcher_state.bg, panel_w, panel_h);
 
 	int row = -1;
@@ -276,6 +290,7 @@ void switcher_layout(void) {
 		x += tile->cw + 2 * SW_PAD + SW_GAP;
 	}
 	free(rowsw);
+	title_message_bar_update(switcher_state.mon);
 }
 
 void switcher_apply_highlight(void) {
@@ -288,6 +303,7 @@ void switcher_apply_highlight(void) {
 void switcher_close(void) {
 	if (!switcher_is_active())
 		return;
+	Monitor *m = switcher_state.mon;
 	for (int i = 0; i < switcher_state.count; i++) {
 		struct switcher_surface *entry, *tmp;
 		wl_list_for_each_safe(entry, tmp, &switcher_state.tiles[i]->surfaces,
@@ -300,6 +316,7 @@ void switcher_close(void) {
 		free(switcher_state.tiles[i]);
 	free(switcher_state.tiles);
 	memset(&switcher_state, 0, sizeof(switcher_state));
+	title_message_bar_hide(m);
 }
 
 // remove a single tile while the switcher stays open, then relayout
@@ -374,6 +391,27 @@ Client *switcher_client_at(double lx, double ly) {
 		return tile->c;
 	}
 	return NULL;
+}
+
+bool switcher_title_message_bar_geometry(Monitor *m, Client **client,
+										 struct wlr_box *box) {
+	if (!switcher_is_active() || !m || m != switcher_state.mon ||
+		switcher_state.count <= 0 || switcher_state.index < 0 ||
+		switcher_state.index >= switcher_state.count)
+		return false;
+
+	if (client)
+		*client = switcher_state.tiles[switcher_state.index]->c;
+	if (box) {
+		*box = (struct wlr_box){
+			.x = switcher_state.panel_x,
+			.y = switcher_state.panel_y + switcher_state.panel_h +
+				 (int)config.title_message_bar_gap,
+			.width = switcher_state.panel_w,
+			.height = (int)config.title_message_bar_height,
+		};
+	}
+	return true;
 }
 
 void switcher_open(int scope, int dir) {
@@ -451,6 +489,7 @@ void switcher_cycle(int dir) {
 	switcher_state.index = (switcher_state.index + dir + switcher_state.count) %
 						   switcher_state.count;
 	switcher_apply_highlight();
+	title_message_bar_update(switcher_state.mon);
 }
 
 int32_t switcher(const Arg *arg) {

@@ -20,6 +20,7 @@
 #include "mango/manage/client.h"
 #include "mango/manage/layer.h"
 #include "mango/manage/misc.h"
+#include "mango/manage/title-message-bar.h"
 #include "mango/manage/xwayland_primary.h"
 #include <fcntl.h>
 #include <scenefx/render/fx_renderer/fx_renderer.h>
@@ -142,6 +143,11 @@ bool is_centertile_layout(Monitor *m) {
 		return true;
 
 	return false;
+}
+
+bool is_overcircle_mode(const Monitor *m) {
+	return m && m->isoverview && m->ov_tab_layout && !m->is_jump_mode &&
+		   !m->ov_normal_mode;
 }
 
 void special_sync_top_layer(bool special_active) {
@@ -341,6 +347,17 @@ Monitor *device_target_monitor(struct wlr_input_device *device) {
 	}
 
 	return server.selected_monitor;
+}
+
+bool blur_layer_on_wallpaper(uint32_t layer) {
+	switch (layer) {
+	case LyrBottom:
+	case LyrTile:
+	case LyrMaximize:
+		return true;
+	default:
+		return false;
+	}
 }
 
 bool mango_scene_output_commit(struct wlr_scene_output *scene_output,
@@ -564,8 +581,10 @@ bool apply_rule_to_state(Monitor *m, const ConfigMonitorRule *rule,
 					m->wlr_output->name);
 
 	if (rule->width > 0 && rule->height > 0 && rule->refresh > 0) {
-		struct wlr_output_mode *internal_mode = get_nearest_output_mode(
-			m->wlr_output, rule->width, rule->height, rule->refresh);
+		struct wlr_output_mode *internal_mode = NULL;
+		if (!rule->custom)
+			internal_mode = get_nearest_output_mode(
+				m->wlr_output, rule->width, rule->height, rule->refresh);
 		if (internal_mode) {
 			wlr_output_state_set_mode(state, internal_mode);
 			mode_set = true;
@@ -877,6 +896,7 @@ void handle_output_destroy(struct wl_listener *listener, void *data) {
 		wlr_scene_node_destroy(&m->special_dim_rect->node);
 		m->special_dim_rect = NULL;
 	}
+	title_message_bar_finish(m);
 	if (m->skip_frame_timeout) {
 		monitor_stop_skip_frame_timer(m);
 		wl_event_source_remove(m->skip_frame_timeout);

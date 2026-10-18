@@ -8,6 +8,7 @@
 #include "mango/manage/misc.h"
 #include "mango/manage/monitor.h"
 #include "mango/manage/tab.h"
+#include "mango/manage/title-message-bar.h"
 #include "mango/overview/overview.h"
 #include <math.h>
 #include <scenefx/types/wlr_scene.h>
@@ -1024,6 +1025,9 @@ void client_apply_clip(Client *c, float factor) {
 		client_draw_dim(c, surface_clip_offset);
 
 		overview_layout_card(c);
+		if (config.title_message_bar_height > 0 && is_overcircle_mode(c->mon) &&
+			c == c->mon->sel)
+			title_message_bar_update_geometry(c->mon);
 		overview_card_set_corner_radii(c, set_client_corner_location(c));
 		return;
 	}
@@ -1800,7 +1804,7 @@ bool client_apply_focus_opacity(Client *c) {
 
 		c->opacity_animation.current_opacity = target_opacity;
 		client_set_opacity(c, target_opacity);
-		if (config.blur && !c->no_blur && !config.blur_optimized) {
+		if (config.blur && !c->no_blur && !client_blur_uses_wallpaper(c)) {
 			float blur_val = MIN(percent * (1.0 - config.fadein_begin_opacity) +
 									 config.fadein_begin_opacity,
 								 1.0);

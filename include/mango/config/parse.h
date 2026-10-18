@@ -459,7 +459,6 @@ typedef struct {
 	int32_t blur_layer;
 	int32_t blur_optimized;
 	int32_t border_radius;
-	int32_t border_radius_location_default;
 	struct blur_data blur_params;
 	int32_t shadows;
 	int32_t shadow_only_floating;
@@ -476,6 +475,7 @@ typedef struct {
 	/* appearance */
 	int32_t smartgaps;
 	int32_t monocle_tab_mode;
+	int32_t monocle_right_button_close;
 	int32_t deck_tab_mode;
 	uint32_t gappih;
 	uint32_t gappiv;
@@ -488,6 +488,8 @@ typedef struct {
 	uint32_t borderpx;
 	uint32_t group_bar_height;
 	uint32_t tab_bar_height;
+	uint32_t title_message_bar_height;
+	uint32_t title_message_bar_gap;
 	int32_t always_show_group_bar;
 	int32_t group_bar_close_button_enable;
 	uint32_t group_bar_button_size;
@@ -580,6 +582,7 @@ typedef struct {
 	DecorateDrawData jumplabeldata;
 	DecorateDrawData groupbardata;
 	DecorateDrawData tabbardata;
+	DecorateDrawData title_message_bardata;
 
 	int32_t hdr_depth;
 } Config;

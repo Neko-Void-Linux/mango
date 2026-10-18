@@ -20,6 +20,7 @@
 #include "mango/manage/misc.h"
 #include "mango/manage/monitor.h"
 #include "mango/manage/tab.h"
+#include "mango/manage/title-message-bar.h"
 #include "mango/overview/overview.h"
 #include <fcntl.h>
 #include <unistd.h>
@@ -246,6 +247,14 @@ int32_t focus_direction(const Arg *arg) {
 
 	if (!server.selected_monitor)
 		return 0;
+
+	Client *sel = server.selected_monitor->sel;
+	if (is_monocle_layout(server.selected_monitor) && sel && !sel->isfloating &&
+		(arg->i == LEFT || arg->i == RIGHT)) {
+		Arg a = *arg;
+		a.i = (arg->i == LEFT) ? PREV : NEXT;
+		return focus_stack(&a);
+	}
 
 	Client *c = NULL;
 	c = direction_select(arg);
@@ -701,6 +710,33 @@ int32_t kill_client(const Arg *arg) {
 			pending_kill_client(c);
 		}
 	}
+	return 0;
+}
+
+int32_t smart_kill_client(const Arg *arg) {
+	Client *c =
+		arg->tc
+			? arg->tc
+			: (server.selected_monitor ? server.selected_monitor->sel : NULL);
+	if (!c || !c->mon)
+		return 0;
+
+	if (client_only_in_one_tag(c)) {
+		pending_kill_client(c);
+		return 0;
+	}
+
+	uint32_t view_tags = c->mon->tagset[c->mon->seltags] & TAGMASK;
+	uint32_t remaining_tags = c->tags & ~view_tags;
+	if (!remaining_tags) {
+		pending_kill_client(c);
+		return 0;
+	}
+
+	c->tags = remaining_tags;
+	client_reparent_group(c);
+	client_focus(client_focus_top(server.selected_monitor), 1);
+	arrange(c->mon, false, false);
 	return 0;
 }
 
@@ -2286,6 +2322,7 @@ static void set_overview(const Arg *arg, bool enter) {
 
 	if (!enter) {
 		server.selected_monitor->ov_tab_layout = 0;
+		title_message_bar_hide(server.selected_monitor);
 		if (server.selected_monitor->is_jump_mode)
 			finish_jump_mode(server.selected_monitor);
 	}
@@ -2313,6 +2350,7 @@ static void set_overview(const Arg *arg, bool enter) {
 		} else {
 			server.selected_monitor->isoverview = false;
 			server.selected_monitor->ov_tab_layout = 0;
+			title_message_bar_hide(server.selected_monitor);
 			return;
 		}
 	} else if (sel && (sel->tags & TAGMASK) != 0) {
@@ -2388,7 +2426,6 @@ static void set_overview(const Arg *arg, bool enter) {
 		}
 		arrange(server.selected_monitor, true, false);
 	}
-
 	fix_mon_tagset_from_overview(server.selected_monitor);
 	refresh_monitors_workspaces_status(server.selected_monitor);
 
@@ -2735,15 +2772,7 @@ int32_t focus_by_id(const Arg *arg) {
 	if (!server.selected_monitor || !arg->tc)
 		return 0;
 
-	Client *c = arg->tc;
-
-	if (c->swallowdby)
-		return 0;
-
-	if (client_is_group_member(c))
-		client_focus_group_member(c);
-
-	client_active(c);
+	client_active(arg->tc);
 	return 0;
 }
 

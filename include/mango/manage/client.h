@@ -22,7 +22,8 @@ enum {
 	XdgPopup,
 	XdgImPopup,
 	GroupBar,
-	TabBar
+	TabBar,
+	TitleMessageBar
 }; /* client types */
 
 #ifdef XWAYLAND
@@ -384,6 +385,8 @@ void handle_client_request_minimize(struct wl_listener *listener, void *data);
 void handle_client_set_title(struct wl_listener *listener, void *data);
 void handle_client_activation_request(struct wl_listener *listener, void *data);
 void pending_kill_client(Client *c);
+bool client_blur_uses_wallpaper(Client *c);
+void client_sync_blur_optimized(Client *c);
 void iter_xdg_scene_buffers(struct wlr_scene_buffer *buffer, int32_t sx,
 							int32_t sy, void *user_data);
 void scene_buffer_apply_opacity(struct wlr_scene_buffer *buffer, int32_t sx,
@@ -444,6 +447,7 @@ bool client_wants_group_bar(Client *c);
 void client_update_group_bar_title(Client *c);
 void client_apply_group_bar_config(Client *c);
 void client_remove_group_bar(Client *c);
+bool client_group_swap_focus(Client *c);
 void client_focus_group_member(Client *c);
 void client_check_tab_node_visible(Client *c);
 void client_raise_group(Client *c);
